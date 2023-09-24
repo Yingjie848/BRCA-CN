@@ -1,0 +1,249 @@
+---
+title: Identify frequently down-regulated genes in deleted cases 
+output: html_document
+---
+
+```{r}
+rm(list=ls())
+```
+
+```{r}
+# set work directory first before do anything
+workdir = "./"
+dir.create(workdir)
+setwd(workdir)
+# set data directory to load files from this folder
+datadir <- "data"
+# file for band loss
+file_band_loss <- paste(datadir,"20210129_biallelic_ctl_cytobands/identified_cytobands_Yingjie_2021-01-29/final_er_loss.txt",sep="/")
+# Rdata for expression and copy number
+file_exprs_cn <- "data/brca_ERpos_exprs_cn.rds"
+# file DE genes
+file_DE <- "data/brca_ERpos_samples.fit.csv"
+# set output prefix
+prefix <- paste(workdir,"brca_ERpos_samples",sep='/')
+prefix
+# output dir
+outdir <- "results_ER_BRCA2"
+dir.create(outdir)
+```
+
+```{r}
+suppressMessages(library(dplyr))
+suppressMessages(source("lib_expr.R"))
+```
+
+```{r}
+# load expression and copy number data
+rdata <- readRDS(file_exprs_cn)
+names(rdata)
+cn.ovl <- rdata$cnv
+exprs.ovl <- rdata$exprs.fpkm
+```
+
+```{r}
+# calculate zscore
+zscore.ovl <- t(scale(t(exprs.ovl)))
+dim(zscore.ovl)
+```
+
+```{r}
+# load biallelic and control samples
+file.HRD <- paste(datadir,"build_biallelic_sample_list/samples_biallelic_BRCA2.txt",sep="/")
+file.HR <- paste(datadir,"20200805_biallelic_ctl_cytobands/sample_control_noHiLST_domSig3.20200805.txt",sep="/")
+HRD <- read.table(file.HRD, stringsAsFactors = FALSE)
+HR  <- read.table(file.HR, stringsAsFactors = FALSE)
+# build sample_info table
+sample_info <- rbind(data.frame(sample=HRD$V1,group="B"),
+                     data.frame(sample=HR$V1,group="C"))
+```
+
+```{r}
+# update cn.ovl and exprs.ovl, keep sample_info and matrix in same order
+sample_info <- sample_info[as.vector(sample_info$sample) %in% colnames(cn.ovl) & as.vector(sample_info$sample) %in% colnames(exprs.ovl),]
+table(sample_info$group)
+cn.ovl <- cn.ovl[,as.vector(sample_info$sample)]
+exprs.ovl <- exprs.ovl[,as.vector(sample_info$sample)]
+zscore.ovl <- zscore.ovl[,as.vector(sample_info$sample)]
+```
+
+## identify recurrent genes
+
+```{r}
+# set genes to be grouped/plotted 
+# here all genes
+gene_table <- read.csv(paste0(datadir,"/genes_cytoband.csv"))
+
+gene2band <- as.vector(gene_table$chr_cb)
+names(gene2band) <- as.vector(gene_table$Gene.symbol)
+
+write.csv(table(gene_table$chr_cb),paste0(outdir,"/genes_per_cytoband.csv"))
+
+genes <- as.vector(gene_table$Gene.symbol)
+genes <- genes[genes %in% rownames(exprs.ovl)]
+```
+
+```{r}
+# group samples by genes
+data.genes <- lapply(genes,group_samples_for_loss)
+names(data.genes) <- genes
+```
+
+### count frequency by copy number and gene expression groups
+* for each gene, it is grouped by biallelic(B)/control(C), loss(L)/not loss(N), low(L)/high(H) expression
+* low/high expression level is defined by median value of gene expression across all samples (biallelic + control)
+* ratio1 (TCS) is defined by BLL/BL, representing the proportion of low expression samples in biallelic loss. We expected ratio1 to be high, here we set 0.7 (70%) as threshold
+* ratio2 (normalized TCS) is defined by (BLL/BL)/(CNL/CN), representing how high for the ratio1 comparing to control not loss samples
+* we also defined pvalue and fold change between BLL and CNL
+
+```{r}
+# count frequency by copy number and gene expression groups
+counts.raw <- count_frequency_of_cn_ex_groups_for_loss(genes,data.genes)
+```
+
+```{r}
+counts <- counts.raw
+```
+
+```{r}
+# filter out missing values
+counts <- subset(counts,!is.na(ratio1) & !is.na(ratio2) )
+counts.wo_missing_values = counts
+```
+
+```{r}
+# add information to counts
+# add gene coordinates
+gene_coord <- gene_table[,c('Gene.symbol','Gene.chr','Gene.start','Gene.end','chr_cb')]
+counts <- merge(counts,gene_coord,by='Gene.symbol',sort=F)
+counts$coordinates <- (counts$Gene.start+counts$Gene.end)/2
+
+# add loss and not loss
+cytoband.del <- read.table(file_band_loss)
+chr_cb <- as.vector(counts$chr_cb)
+counts$loss <- ifelse(chr_cb %in% as.vector(cytoband.del$V1),"loss","not loss")
+nrow(cytoband.del)
+table(counts$loss)
+
+counts <- counts[,c('Gene.symbol','Gene.chr','coordinates','chr_cb','loss','ratio1','ratio2','pval.BLL.vs.CNL','fc.BLL.vs.CNL','fc2.BLL.vs.CNL','Total','BL','BLL')]
+
+# add DE genes
+DEtable <- read.csv(file_DE)
+DEtable <- DEtable[,c('X','logFC','P.Value','adj.P.Val')]; colnames(DEtable) <- c('Gene.symbol','DE.logFC','DE.P.value','DE.adj.P.val')
+DEtable$DE.status <- ifelse(DEtable$DE.logFC > log2(1.5) & DEtable$DE.adj.P.val < 0.05, 'Up',
+                           ifelse(DEtable$DE.logFC < -log2(1.5) & DEtable$DE.adj.P.val < 0.05, 'Down', 'NS'))
+counts <- merge(counts,DEtable,by="Gene.symbol",sort=F,all.x=T)
+table(counts$DE.status)
+
+# add cosmic annotation
+counts <- add_cosmic_annotation(counts,by.x="Gene.symbol")
+
+counts.annotated <- counts
+```
+
+```{r}
+# get cytobands loss
+bands.loss <- unique(as.vector(counts[counts$loss %in% 'loss',]$chr_cb))
+```
+
+## examine distribution of BL, ratios and pval to determine cutoff for recurrent genes
+
+```{r}
+# examine distribution of BL, ratios and pval to determine cutoff
+
+pdf(paste0(outdir,"/ratio_distribution.pdf"))
+par(mfrow=c(2,2))
+hist(counts$ratio1,breaks=40,main="BLL/BL",xlab="BLL/BL")
+hist(counts$ratio2,breaks=40,main="BLL/CNL",xlab="BLL/CNL")
+hist(counts$BL,breaks=40,main="No. of biallelic loss")
+hist(counts$BLL,breaks=40,main="No. of BLL")
+hist(counts$pval.BLL.vs.CNL,breaks=40,main="BLL vs CNL",xlab="P-value")
+hist(counts$fc.BLL.vs.CNL,breaks=40,main="BLL vs CNL",xlab="Fold change")
+dev.off()
+```
+
+```{r}
+# filter out genes with low number of biallelic loss
+thres_BL = 5
+counts <- subset(counts,BL >= thres_BL)
+counts.wo_lowN_BL <- counts
+counts.filtered <- counts
+```
+
+```{r}
+# examine distribution of ratios and pval again
+pdf(paste0(outdir,"/ratio_distribution.filtNBiallelicLoss.pdf"))
+par(mfrow=c(2,2))
+hist(counts$ratio1,breaks=40,main="BLL/BL",xlab="BLL/BL")
+hist(counts$ratio2,breaks=40,main="BLL/CNL",xlab="BLL/CNL")
+hist(counts$BL,breaks=40,main="No. of biallelic loss")
+hist(counts$BLL,breaks=40,main="No. of BLL")
+hist(counts$pval.BLL.vs.CNL,breaks=40,main="BLL vs CNL",xlab="P-value")
+hist(counts$fc.BLL.vs.CNL,breaks=40,main="BLL vs CNL",xlab="Fold change")
+dev.off()
+```
+
+## subset and summarize counts
+
+```{r}
+# subset table to identify recurrent genes, significant recurrent genes on cytoband loss
+
+thres_BLL = 0.7
+thres_BLL_CNL = 1.5
+thres_pval_BLL_CNL = 0.05
+
+print("all genes after filtering"); nrow(counts)
+
+print("recurrent genes"); counts.recurrent_genes <- counts[counts$ratio1 >= thres_BLL & counts$ratio2 >= thres_BLL_CNL,]; 
+
+print("genes on cytoband loss"); counts.loss <- counts[counts$chr_cb %in% bands.loss,]; 
+
+print("recurrent genes on cytoband loss"); counts.loss.recurrent_genes <- counts[counts$chr_cb %in% bands.loss & counts$ratio1 >= thres_BLL & counts$ratio2 >= thres_BLL_CNL,]; 
+
+print("significant recurrent genes");counts.sig_recurrent_genes <- counts[counts$ratio1 >= thres_BLL & counts$ratio2 >= thres_BLL_CNL & counts$pval.BLL.vs.CNL < thres_pval_BLL_CNL,]
+
+print("significant recurrent genes on cytoband loss"); counts.loss.sig_recurrent_genes <- counts[counts$chr_cb %in% bands.loss & counts$ratio1 >= thres_BLL & counts$ratio2 >= thres_BLL_CNL & counts$pval.BLL.vs.CNL < thres_pval_BLL_CNL,]
+
+write.csv(counts.annotated,paste0(outdir,"/counts.annotated.csv"))
+write.csv(counts.filtered,paste0(outdir,"/counts.filtered.csv"))
+write.csv(counts.recurrent_genes,paste0(outdir,"/counts.recurrent_genes.csv"))
+write.csv(counts.loss,paste0(outdir,"/counts.loss.csv"))
+write.csv(counts.loss.recurrent_genes,paste0(outdir,"/counts.loss.recurrent_genes.csv"))
+write.csv(counts.sig_recurrent_genes,paste0(outdir,"/counts.sig_recurrent_genes.csv"))
+write.csv(counts.loss.sig_recurrent_genes,paste0(outdir,"/counts.loss.sig.csv"))
+
+# summary
+summary.tmp <- c('bi-allelic samples'=sum(sample_info$group=='B'),'controls'=sum(sample_info$group=='C'),
+            'all genes'=nrow(counts.raw),'genes without missing values'=nrow(counts.wo_missing_values),
+            'genes without low number of samples in biallelic loss'=nrow(counts.wo_lowN_BL),
+            'filtered genes'=nrow(counts),'total cytobands'=length(unique(counts$chr_cb)),
+            'recurrent genes'=nrow(counts.recurrent_genes),'cytobands for recurrent genes'=length(unique(counts.recurrent_genes$chr_cb)),
+            'genes on cytoband loss'=nrow(counts.loss),'cytobands loss'=length(unique(counts.loss$chr_cb)),
+            'recurrent genes on cytoband loss'=nrow(counts.loss.recurrent_genes),'cytobands loss for recurrent genes'=length(unique(counts.loss.recurrent_genes$chr_cb)),
+            'significant recurrent genes'=nrow(counts.sig_recurrent_genes),
+            'significant recurrent genes on cytoband loss'=nrow(counts.loss.sig_recurrent_genes),
+            'cytobands loss for significant recurrent genes'=length(unique(counts.loss.sig_recurrent_genes$chr_cb)))
+summary <- data.frame(term=names(summary.tmp),counts=summary.tmp)
+write.csv(summary,paste0(outdir,"/summary.csv"))
+```
+
+```{r}
+# save rdata
+rdata <- list(data.genes=data.genes,
+              sample_info=sample_info,
+              exprs.ovl=exprs.ovl,zscore.ovl=zscore.ovl,cn.ovl=cn.ovl,
+              gene2band=gene2band,bands.loss=bands.loss,
+              thres_BL=thres_BL,thres_BLL=thres_BLL,thres_BLL_CNL=thres_BLL_CNL,thres_pval_BLL_CNL=thres_pval_BLL_CNL,
+              counts.raw=counts.raw,
+              counts.annotated=counts.annotated,
+              counts.filtered=counts.filtered,outdir=outdir,
+              counts.filtered.loss=counts[counts$loss=="loss",],
+              counts.recurrent_genes=counts.recurrent_genes,
+              counts.loss=counts.loss,
+              counts.loss.recurrent_genes=counts.loss.recurrent_genes,
+              counts.sig_recurrent_genes=counts.sig_recurrent_genes,
+              counts.loss.sig_recurrent_genes=counts.loss.sig_recurrent_genes,
+              summary=summary,bands.loss=bands.loss)
+saveRDS(rdata,file=paste0(outdir,"/results.rds"))
+```
+
