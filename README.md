@@ -1,5 +1,5 @@
 # BRCA-CN
-Investigation of copy number alterations and proliferation-enhancing genes in bi-allelic BRCA1/2 tumors
+## Investigation of copy number alterations and proliferation-enhancing genes in bi-allelic BRCA1/2 tumors
 
 This investigation comprises three primary components:
 1) Copy Number Alterations in Bi-allelic BRCA1/2 Tumors: This phase involves utilizing Fisher's Exact test at the cytoband level to detect copy number alterations that co-occur in bi-allelic BRCA1/2 tumors.
