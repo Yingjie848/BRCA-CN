@@ -1,2 +1,7 @@
 # BRCA-CN
-Investigate copy number alterations co-occurred in bi-allelic BRCA1/2 tumors, and identify genes enhancing proliferation in BRCA1-null and BRCA2-null cells
+## Investigation of copy number alterations and proliferation-enhancing genes in bi-allelic BRCA1/2 tumors
+
+This investigation comprises three primary components:
+1) Copy Number Alterations in Bi-allelic BRCA1/2 Tumors: This phase involves utilizing Fisher's Exact test at the cytoband level to detect copy number alterations that co-occur in bi-allelic BRCA1/2 tumors.
+2) Identification of Frequently Deleted and Down-regulated Genes: This step employs a transcriptional consistency score (TCS) calculated from bBRCA1/2 tumors with deletions. To provide context, the TCS is normalized by dividing it by the TCS of control tumors without deletions. This process helps identify genes that are frequently deleted and exhibit down-regulation in their gene expression levels.
+3) Identification of Proliferation-Enhancing Genes: In this part, the aim is to identify genes that potentially enhance cellular proliferation in BRCA-null and BRCA2-null cells. These genes are of particular interest due to their role in promoting cell proliferation in the absence of BRCA1 or BRCA2 function. To achieve this, we leverage genome-wide CRISPR screen data obtained from RPE1 BRCA1-null and DLD1 BRCA2-null cells. Using a relative proliferation score metric, we evaluate profliferation-enhancing effects of candidate genes. This analysis enables us to identify genes that play a crucial role in driving cell proliferation in the absence of functional BRCA1 or BRCA2 genes.  
